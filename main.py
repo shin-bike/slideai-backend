@@ -605,12 +605,17 @@ async def generate(req: GenerateRequest):
         with open(pptx_path, "rb") as f:
             pptx_bytes = f.read()
 
-        fname = f"{req.topic[:20]}_{__import__('datetime').date.today()}.pptx"
+        import datetime, urllib.parse
+        date_str = datetime.date.today().isoformat()
+        # ASCII safe filename for compatibility
+        fname_ascii = f"presentation_{date_str}.pptx"
+        # RFC 5987 encoded filename for Japanese support
+        fname_utf8 = urllib.parse.quote(f"{req.topic[:20]}_{date_str}.pptx")
         return StreamingResponse(
             io.BytesIO(pptx_bytes),
             media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
             headers={
-                "Content-Disposition": f'attachment; filename="{fname}"',
+                "Content-Disposition": f"attachment; filename=\"{fname_ascii}\"; filename*=UTF-8''{fname_utf8}",
                 "X-Slide-Count": str(len(plan)),
                 "X-QA-Issues": str(len(qa_issues)),
             }
