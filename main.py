@@ -23,6 +23,8 @@ from pptx import Presentation
 from pptx.util import Inches, Pt, Emu
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
+from pptx.oxml.ns import qn
+import lxml.etree as etree
 import anthropic
 
 logging.basicConfig(level=logging.INFO)
@@ -178,128 +180,145 @@ def copy_slide_from_template(src_prs: Presentation, slide_idx: int, dst_prs: Pre
 
     src_slide = src_prs.slides[slide_idx]
 
-    # スライドレイアウトを追加（blank使用）
-    blank_layout = dst_prs.slide_layouts[6]  # Blank layout
+    # blank layoutでスライドを追加
+    blank_layout = dst_prs.slide_layouts[6]
     new_slide = dst_prs.slides.add_slide(blank_layout)
 
-    # XML要素をコピー（図形・テキストボックスなど）
     src_sp_tree = src_slide.shapes._spTree
     dst_sp_tree = new_slide.shapes._spTree
 
-    # 既存のプレースホルダーをクリア
-    for elem in dst_sp_tree.findall(qn("p:sp")):
+    # dst_sp_treeの既存要素を全削除
+    for elem in list(dst_sp_tree):
         dst_sp_tree.remove(elem)
 
-    # ソーススライドの全要素をコピー
+    # src_sp_treeの全要素をディープコピー
     for elem in src_sp_tree:
-        tag = elem.tag
-        # spTree自体の属性系は除く
-        if tag in [qn("p:sp"), qn("p:grpSp"), qn("p:cxnSp"), qn("p:pic"), qn("p:graphicFrame")]:
-            dst_sp_tree.append(copy.deepcopy(elem))
+        dst_sp_tree.append(copy.deepcopy(elem))
 
-    # 背景をコピー
-    if src_slide.background.fill.type is not None:
-        bg = new_slide.background
-        bg.fill.solid()
-        try:
-            src_fill = src_slide.background.fill
-            if src_fill.fore_color.type is not None:
-                bg.fill.fore_color.rgb = src_fill.fore_color.rgb
-        except Exception:
-            pass
+    # 背景をコピー（XMLレベル）
+    try:
+        src_bg = src_slide._element.find(qn('p:bg'))
+        if src_bg is not None:
+            dst_slide_elem = new_slide._element
+            existing_bg = dst_slide_elem.find(qn('p:bg'))
+            if existing_bg is not None:
+                dst_slide_elem.remove(existing_bg)
+            # spTree の直前に背景を挿入
+            sp_tree = dst_slide_elem.find('.//' + qn('p:spTree'))
+            if sp_tree is not None:
+                sp_tree.addprevious(copy.deepcopy(src_bg))
+            else:
+                dst_slide_elem.insert(0, copy.deepcopy(src_bg))
+    except Exception as e:
+        log.warning(f"Background copy failed: {e}")
 
     return new_slide
 
 # ════════════════════════════════════════
 # Step 4 & 5: テキスト流し込み
 # ════════════════════════════════════════
+
+# フッター・ページ番号の上端閾値（EMU）
+_FOOTER_TOP = 6000000
+# テンプレートの説明文パターン（除外対象）
+_IGNORE_PATTERNS = [
+    r'^横列項目', r'^シェブロンが不要', r'テキストボックスを縦位置',
+    r'適宜削除', r'ドラッグ', r'^このスライド',
+]
+
+def _write_text(shape, lines: list) -> None:
+    """XMLレベルでテキストを完全書き換え（PLACEHOLDER/TextBox両対応）"""
+    try:
+        import lxml.etree as etree
+        txBody = shape.text_frame._txBody
+        for p in txBody.findall(qn('a:p')):
+            txBody.remove(p)
+        for line in (lines if lines else [""]):
+            p_elem = etree.SubElement(txBody, qn('a:p'))
+            r_elem = etree.SubElement(p_elem, qn('a:r'))
+            t_elem = etree.SubElement(r_elem, qn('a:t'))
+            t_elem.text = str(line)
+    except Exception as e:
+        log.warning(f"_write_text error: {e}")
+
 def inject_content(slide, spec: dict) -> None:
-    """スライドのテキストボックスにコンテンツを流し込む"""
+    """スライドのテキストをXMLレベルで書き換える"""
+    import re
     headline = spec.get("headline") or spec.get("title", "")
     body     = spec.get("body") or spec.get("key_points", [])
 
-    shapes = list(slide.shapes)
-    text_shapes = [s for s in shapes if s.has_text_frame]
+    title_shape    = None
+    content_shapes = []
+    null_top_shapes = []  # top=Noneのシェイプ（コピー直後のプレースホルダー）
 
-    if not text_shapes:
+    for s in slide.shapes:
+        if not s.has_text_frame:
+            continue
+        text = s.text_frame.text.strip()
+        top  = s.top
+
+        # top=Noneのシェイプは別途収集
+        if top is None:
+            null_top_shapes.append(s)
+            continue
+
+        # フッター・ページ番号エリアを除外
+        if top > _FOOTER_TOP:
+            continue
+        # 数字のみはページ番号
+        if text.isdigit():
+            continue
+        # テンプレート説明文を除外
+        if any(re.search(p, text) for p in _IGNORE_PATTERNS):
+            continue
+
+        content_shapes.append(s)
+
+    # Rectangle 2 をタイトルとして優先（DTCテンプレートのタイトル命名規則）
+    for s in null_top_shapes:
+        if s.name == 'Rectangle 2':
+            title_shape = s
+            break
+
+    # なければnull_topの先頭またはcontent_shapesの先頭
+    if not title_shape:
+        if null_top_shapes:
+            title_shape = null_top_shapes[0]
+        elif content_shapes:
+            title_shape = content_shapes.pop(0)
+
+    # null_topのうちタイトル以外をcontentに追加
+    for s in null_top_shapes:
+        if s is not title_shape:
+            content_shapes.append(s)
+
+    # top順でソート
+    content_shapes.sort(key=lambda s: (s.top or 0, s.left or 0))
+
+    # タイトルを書き換え
+    if title_shape:
+        _write_text(title_shape, [headline])
+
+    if not content_shapes:
         return
 
-    # ソート: 上→下、左→右（top/leftがNoneのシェイプを除外）
-    text_shapes = [s for s in text_shapes if s.top is not None and s.left is not None]
-    text_shapes.sort(key=lambda s: (s.top, s.left))
-
-    # 最初のテキストボックス → タイトル/ヘッドライン
-    if text_shapes:
-        _set_text(text_shapes[0], headline, bold=True)
-
-    # 残りのテキストボックス → ボディ
-    body_shapes = text_shapes[1:]
-    if not body_shapes:
-        return
-
-    if len(body_shapes) == 1:
-        # 1つのテキストボックスに全部入れる
-        _set_text_list(body_shapes[0], body)
+    if len(content_shapes) == 1:
+        _write_text(content_shapes[0], body)
     else:
-        # 複数テキストボックスに分散
-        per_box = max(1, len(body) // len(body_shapes))
-        for i, shape in enumerate(body_shapes):
-            chunk_start = i * per_box
-            chunk_end   = chunk_start + per_box if i < len(body_shapes) - 1 else len(body)
-            chunk = body[chunk_start:chunk_end]
-            if chunk:
-                _set_text_list(shape, chunk)
+        per = max(1, len(body) // len(content_shapes))
+        for i, shape in enumerate(content_shapes):
+            start = i * per
+            end   = start + per if i < len(content_shapes) - 1 else len(body)
+            chunk = body[start:end]
+            _write_text(shape, chunk if chunk else [""])
 
 def _set_text(shape, text: str, bold: bool = False) -> None:
-    """テキストフレームにテキストをセット（既存スタイルを維持）"""
-    try:
-        tf = shape.text_frame
-        tf.word_wrap = True
-        if tf.paragraphs:
-            para = tf.paragraphs[0]
-            if para.runs:
-                run = para.runs[0]
-                run.text = text
-                if bold:
-                    run.font.bold = True
-            else:
-                run = para.add_run()
-                run.text = text
-                if bold:
-                    run.font.bold = True
-            # 残りの段落をクリア
-            for p in tf.paragraphs[1:]:
-                for r in p.runs:
-                    r.text = ""
-        else:
-            para = tf.add_paragraph()
-            run = para.add_run()
-            run.text = text
-    except Exception as e:
-        log.warning(f"_set_text error: {e}")
+    """後方互換用"""
+    _write_text(shape, [text])
 
-def _set_text_list(shape, items: list[str]) -> None:
-    """テキストフレームにリストをセット"""
-    try:
-        tf = shape.text_frame
-        tf.word_wrap = True
-        # 既存段落をクリア
-        for para in tf.paragraphs:
-            for run in para.runs:
-                run.text = ""
-        # 最初の段落を使い回し、足りなければ追加
-        for i, item in enumerate(items):
-            if i < len(tf.paragraphs):
-                para = tf.paragraphs[i]
-                if para.runs:
-                    para.runs[0].text = item
-                else:
-                    para.add_run().text = item
-            else:
-                new_para = tf.add_paragraph()
-                new_para.add_run().text = item
-    except Exception as e:
-        log.warning(f"_set_text_list error: {e}")
+def _set_text_list(shape, items: list) -> None:
+    """後方互換用"""
+    _write_text(shape, items)
 
 # ════════════════════════════════════════
 # Step 5b: テンプレートなしスライドを新規作成
