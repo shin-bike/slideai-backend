@@ -311,14 +311,14 @@ def create_slide_from_scratch(dst_prs: Presentation, spec: dict) -> any:
     slide_layout = dst_prs.slide_layouts[6]  # Blank
     slide = dst_prs.slides.add_slide(slide_layout)
 
-    W = dst_prs.slide_width
-    H = dst_prs.slide_height
-    MX = Inches(0.45)
-    MY = Inches(0.35)
-    TH = Inches(0.75)
-    CY = MY + TH + Inches(0.15)
-    CW = W - MX * 2
-    CH = H - CY - Inches(0.25)
+    W = int(dst_prs.slide_width)
+    H = int(dst_prs.slide_height)
+    MX = int(Inches(0.45))
+    MY = int(Inches(0.35))
+    TH = int(Inches(0.75))
+    CY = int(MY + TH + Inches(0.15))
+    CW = int(W - MX * 2)
+    CH = int(H - CY - Inches(0.25))
 
     headline = spec.get("headline") or spec.get("title", "")
     body     = spec.get("body") or spec.get("key_points", [])
@@ -354,32 +354,35 @@ def create_slide_from_scratch(dst_prs: Presentation, spec: dict) -> any:
 
     # タイトル（全スライド共通）
     add_textbox(MX, MY, CW, TH, headline, size=22, bold=True, color=NAVY)
-    add_rect(MX, MY + TH, CW, Emu(25000), LGRAY)
+    add_rect(MX, int(MY + TH), CW, 25000, LGRAY)
+
+    # ヘルパー: Inches を int に変換
+    def I(n): return int(Inches(n))
 
     if ct == "プロセス":
         steps = body[:5]
         n = len(steps) or 3
-        step_w = int((CW - Inches(0.18) * (n-1)) / n)
+        step_w = int((CW - I(0.18) * (n-1)) / n)
         accent_colors = [BLUE, RGBColor(0x1A,0x7A,0x52), RGBColor(0xD4,0x88,0x0A), RGBColor(0x4B,0x8E,0xE8), RGBColor(0xC0,0x39,0x2B)]
         for i, step in enumerate(steps):
-            sx = MX + i * (step_w + Inches(0.18))
+            sx = int(MX + i * (step_w + I(0.18)))
             ac = accent_colors[i % len(accent_colors)]
             add_rect(sx, CY, step_w, CH, LIGHT)
-            add_rect(sx, CY, step_w, Emu(70000), ac)
-            add_textbox(sx + Inches(0.15), CY + Inches(0.15), step_w - Inches(0.3), Inches(0.5),
+            add_rect(sx, CY, step_w, 70000, ac)
+            add_textbox(sx + I(0.15), CY + I(0.15), step_w - I(0.3), I(0.5),
                         f"0{i+1}", size=26, bold=True, color=ac)
             sp = step.find("：")
             head = step[:sp] if sp > 0 else step[:min(len(step), 18)]
             detail = step[sp+1:] if sp > 0 else step[18:]
-            add_textbox(sx + Inches(0.15), CY + Inches(0.8), step_w - Inches(0.3), Inches(0.65),
+            add_textbox(sx + I(0.15), CY + I(0.8), step_w - I(0.3), I(0.65),
                         head, size=12, bold=True, color=NAVY)
             if detail:
-                add_textbox(sx + Inches(0.15), CY + Inches(1.55), step_w - Inches(0.3), CH - Inches(1.8),
+                add_textbox(sx + I(0.15), CY + I(1.55), step_w - I(0.3), max(I(0.3), CH - I(1.8)),
                             detail, size=10, color=GRAY)
 
     elif ct == "比較":
         cols = min(len(body), 4)
-        label_w = Inches(1.5)
+        label_w = I(1.5)
         cell_w  = int((CW - label_w) / max(cols, 1))
         rows = ["自社", "競合A", "競合B"]
         row_h = int(CH / (len(rows) + 1))
@@ -396,38 +399,38 @@ def create_slide_from_scratch(dst_prs: Presentation, spec: dict) -> any:
             ["○ 低価格訴求", "△ 品質ばらつき", "○ 立地優位", "△ サービス浅い"],
         ]
         for ri, row_label in enumerate(rows):
-            ry = CY + (ri + 1) * row_h
+            ry = int(CY + (ri + 1) * row_h)
             fill = LIGHT if ri % 2 == 0 else WHITE
             add_rect(MX, ry, CW, row_h, fill)
             add_rect(MX, ry, label_w, row_h, BLUE if ri == 0 else NAVY)
             add_textbox(MX, ry, label_w, row_h, row_label, size=11, bold=True, color=WHITE, align=PP_ALIGN.CENTER)
             for ci in range(cols):
                 eval_text = eval_data[ri][ci] if ci < len(eval_data[ri]) else "－"
-                add_textbox(MX + label_w + ci * cell_w + Inches(0.08), ry + Inches(0.06),
-                            cell_w - Inches(0.16), row_h - Inches(0.12),
+                add_textbox(int(MX + label_w + ci * cell_w + I(0.08)), int(ry + I(0.06)),
+                            int(cell_w - I(0.16)), int(row_h - I(0.12)),
                             eval_text, size=10, color=NAVY if ri == 0 else GRAY, align=PP_ALIGN.CENTER)
 
     else:
         # デフォルト: 2列テキスト
         pts  = body[:8]
         half = (len(pts) + 1) // 2
-        col_w = int((CW - Inches(0.2)) / 2)
-        item_h = int(min(CH / max((half), 1) - Inches(0.08), Inches(1.4)))
+        col_w = int((CW - I(0.2)) / 2)
+        item_h = int(min(CH / max(half, 1) - I(0.08), I(1.4)))
         for col_idx, group in enumerate([pts[:half], pts[half:]]):
-            gx = MX + col_idx * (col_w + Inches(0.2))
+            gx = int(MX + col_idx * (col_w + I(0.2)))
             for i, pt in enumerate(group):
-                iy = CY + i * (item_h + Inches(0.08))
+                iy = int(CY + i * (item_h + I(0.08)))
                 ac = [BLUE, RGBColor(0x1A,0x7A,0x52), RGBColor(0xD4,0x88,0x0A), RGBColor(0x4B,0x8E,0xE8)][i % 4]
                 add_rect(gx, iy, col_w, item_h, LIGHT)
-                add_rect(gx, iy, Inches(0.05), item_h, ac)
+                add_rect(gx, iy, I(0.05), item_h, ac)
                 sp = pt.find("：")
                 if sp > 0:
-                    add_textbox(gx + Inches(0.12), iy + Inches(0.06), col_w - Inches(0.2), Inches(0.32),
+                    add_textbox(gx + I(0.12), iy + I(0.06), col_w - I(0.2), I(0.32),
                                 pt[:sp], size=11, bold=True, color=NAVY)
-                    add_textbox(gx + Inches(0.12), iy + Inches(0.40), col_w - Inches(0.2), item_h - Inches(0.5),
+                    add_textbox(gx + I(0.12), iy + I(0.40), col_w - I(0.2), max(I(0.2), item_h - I(0.5)),
                                 pt[sp+1:], size=10, color=GRAY)
                 else:
-                    add_textbox(gx + Inches(0.12), iy + Inches(0.08), col_w - Inches(0.2), item_h - Inches(0.16),
+                    add_textbox(gx + I(0.12), iy + I(0.08), col_w - I(0.2), max(I(0.2), item_h - I(0.16)),
                                 pt, size=11, color=RGBColor(0x1A, 0x2A, 0x44))
 
     return slide
