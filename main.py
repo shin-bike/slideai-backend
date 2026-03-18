@@ -159,14 +159,17 @@ _EXCLUDE_TITLES = {
 # 使用可能なメタデータ（カテゴリ表紙を除外済み）
 _USABLE_METADATA = [m for m in ALL_METADATA if m.get('title', '').strip() not in _EXCLUDE_TITLES]
 
+# DTC以外のメタデータ（top=None問題がないテンプレートを優先）
+_NON_DTC_METADATA = [m for m in _USABLE_METADATA if m.get('source') != 'DTC_PowerLibrary_2013']
+
 def select_template(purpose: str, content_type: str) -> Optional[dict]:
     """メタデータからベストマッチのテンプレートスライドを返す"""
     combined = (purpose + " " + content_type).lower()
 
-    # content_typeで絞り込み（カテゴリ表紙除外済みのメタデータから）
-    candidates = [m for m in _USABLE_METADATA if m.get("content_type") == content_type]
-
-    # なければ全体から
+    # DTC以外から優先して探す（top=None問題を回避）
+    candidates = [m for m in _NON_DTC_METADATA if m.get("content_type") == content_type]
+    if not candidates:
+        candidates = _NON_DTC_METADATA
     if not candidates:
         candidates = _USABLE_METADATA
 
@@ -272,7 +275,6 @@ _IGNORE_PATTERNS = [
 def _write_text(shape, lines: list) -> None:
     """XMLレベルでテキストを完全書き換え（PLACEHOLDER/TextBox両対応）"""
     try:
-        import lxml.etree as etree
         txBody = shape.text_frame._txBody
         for p in txBody.findall(qn('a:p')):
             txBody.remove(p)
@@ -284,6 +286,62 @@ def _write_text(shape, lines: list) -> None:
     except Exception as e:
         log.warning(f"_write_text error: {e}")
 
+def _write_table(shape, body: list) -> None:
+    """テーブルシェイプにbodyの内容をXMLレベルで流し込む"""
+    try:
+        tbl_elem = shape._element.find('.//' + qn('a:tbl'))
+        if tbl_elem is None:
+            return
+        rows = tbl_elem.findall(qn('a:tr'))
+        if not rows:
+            return
+
+        ncols = len(rows[0].findall(qn('a:tc')))
+
+        # bodyを「見出し：内容」で分解
+        def parse_item(item):
+            sp = item.find('：')
+            if sp > 0:
+                return item[:sp].strip(), item[sp+1:].strip()
+            return '', item.strip()
+
+        body_idx = 0
+        for ri, row in enumerate(rows):
+            cells = row.findall(qn('a:tc'))
+            for ci, cell in enumerate(cells):
+                t_elems = cell.findall('.//' + qn('a:t'))
+                existing = ''.join(t.text or '' for t in t_elems).strip()
+
+                # プレースホルダーテキスト（全て書き換え対象）
+                is_placeholder = existing in ('xx', '縦列タイトル', '横列項目', '') \
+                    or 'テキスト' in existing or 'レベル' in existing
+
+                if is_placeholder and body_idx < len(body):
+                    key, val = parse_item(body[body_idx])
+                    if ci == 0:
+                        new_text = key or f'項目{body_idx+1}'
+                    else:
+                        new_text = val or body[body_idx]
+
+                    # テキストを書き換え
+                    for t_e in t_elems:
+                        t_e.text = ''
+                    if t_elems:
+                        t_elems[0].text = new_text
+                    else:
+                        p_elem = cell.find('.//' + qn('a:p'))
+                        if p_elem is None:
+                            p_elem = etree.SubElement(cell, qn('a:p'))
+                        r_elem = etree.SubElement(p_elem, qn('a:r'))
+                        t_new  = etree.SubElement(r_elem, qn('a:t'))
+                        t_new.text = new_text
+
+                    # 最終列に達したら次のbody項目へ
+                    if ci == ncols - 1:
+                        body_idx += 1
+    except Exception as e:
+        log.warning(f"_write_table error: {e}")
+
 def inject_content(slide, spec: dict) -> None:
     """スライドのテキストをXMLレベルで書き換える"""
     import re
@@ -292,35 +350,47 @@ def inject_content(slide, spec: dict) -> None:
 
     title_shape    = None
     content_shapes = []
-    seen_names     = set()  # 重複シェイプを除外
+    table_shapes   = []
+    seen_ids       = set()  # shape_idで重複を排除
 
     for s in slide.shapes:
-        if not s.has_text_frame:
+        # shape_idで重複を排除
+        sid = s.shape_id
+        if sid in seen_ids:
             continue
-        text = s.text_frame.text.strip()
-        top  = s.top
+        seen_ids.add(sid)
 
-        # フッター・ページ番号エリアを除外（位置修正後はtopが入っているはず）
+        top = s.top
+
+        # フッター・ページ番号エリアを除外
         if top is not None and top > _FOOTER_TOP:
             continue
+
+        # テーブルシェイプを収集（has_tableまたはXML内にa:tblがある場合）
+        has_tbl = s.has_table or (s._element.find('.//' + qn('a:tbl')) is not None)
+        if has_tbl:
+            table_shapes.append(s)
+            continue
+
+        if not s.has_text_frame:
+            continue
+
+        text = s.text_frame.text.strip()
+
         # 数字のみはページ番号
         if text.isdigit():
             continue
         # テンプレート説明文を除外
         if any(re.search(p, text) for p in _IGNORE_PATTERNS):
             continue
+        # 空のシェイプは除外（タイトル候補を除く）
+        if not text and s.name != 'Rectangle 2':
+            continue
 
         # Rectangle 2 = タイトル
         if s.name == 'Rectangle 2' and title_shape is None:
             title_shape = s
-            seen_names.add(s.name + str(top))
             continue
-
-        # 重複シェイプを除外（同じ名前・同じ位置）
-        key = s.name + str(top)
-        if key in seen_names:
-            continue
-        seen_names.add(key)
 
         content_shapes.append(s)
 
@@ -329,11 +399,16 @@ def inject_content(slide, spec: dict) -> None:
         title_shape = content_shapes.pop(0)
 
     # top順でソート
-    content_shapes.sort(key=lambda s: (s.top or 0, s.left or 0))
+    content_shapes.sort(key=lambda s: (s.top if s.top is not None else 9999999, s.left or 0))
 
     # タイトルを書き換え
     if title_shape:
         _write_text(title_shape, [headline])
+
+    # テーブルがある場合はそこにbodyを流し込む
+    if table_shapes:
+        _write_table(table_shapes[0], body)
+        return
 
     if not content_shapes:
         return
@@ -601,50 +676,9 @@ async def generate(req: GenerateRequest):
             ct   = slide_spec.get("content_type", "テキスト")
             spec = {**slide_spec, **(content_map.get(page, {}))}
 
-            # Step 2: テンプレート選択
-            log.info(f"Step 2: Selecting template for page {page} ({ct})...")
-            tmpl_meta = select_template(
-                slide_spec.get("purpose", "") + " " + slide_spec.get("visual_hint", ""),
-                ct
-            )
-
-            used_template = False
-
-            if tmpl_meta:
-                src_name = tmpl_meta.get("source", "")
-                slide_num = tmpl_meta.get("slide_num", 1) - 1  # 0-indexed
-                tmpl_file = TEMPLATE_FILES.get(src_name)
-
-                if tmpl_file and tmpl_file.exists():
-                    # テンプレートファイルをロード（キャッシュ）
-                    if src_name not in loaded_templates:
-                        loaded_templates[src_name] = Presentation(str(tmpl_file))
-                    src_prs = loaded_templates[src_name]
-
-                    if 0 <= slide_num < len(src_prs.slides):
-                        log.info(f"  → Using {src_name} slide {slide_num+1}: {tmpl_meta.get('title','')}")
-                        # Step 3: テンプレートスライドをコピー
-                        new_slide = copy_slide_from_template(src_prs, slide_num, dst_prs)
-                        # Step 4: テキスト流し込み
-                        inject_content(new_slide, spec)
-                        used_template = True
-                        slide_info.append({
-                            "page": page,
-                            "template_source": src_name,
-                            "template_slide": slide_num + 1,
-                            "template_title": tmpl_meta.get("title", ""),
-                            "used_template": True
-                        })
-
-            if not used_template:
-                # Step 4: テンプレートなし → 新規作成
-                log.info(f"  → Creating from scratch for page {page}")
-                create_slide_from_scratch(dst_prs, spec)
-                slide_info.append({
-                    "page": page,
-                    "template_source": None,
-                    "used_template": False
-                })
+            log.info(f"Creating slide {page} ({ct}) from scratch...")
+            create_slide_from_scratch(dst_prs, spec)
+            slide_info.append({"page": page, "used_template": False})
 
         # Step 5: 一時保存
         pptx_path = tmp_dir / "output.pptx"
