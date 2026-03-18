@@ -432,10 +432,26 @@ def _set_text_list(shape, items: list) -> None:
     _write_text(shape, items)
 
 # ════════════════════════════════════════
-# Step 5b: テンプレートなしスライドを新規作成
+# Step 5b: スライドを新規作成（デザインシステム使用）
 # ════════════════════════════════════════
 def create_slide_from_scratch(dst_prs: Presentation, spec: dict) -> any:
-    """テンプレートが使えない場合、python-pptxでスライドを新規作成"""
+    """slide_designs.py のデザイン関数を使ってスライドを生成"""
+    from slide_designs import get_design_fn
+
+    headline = spec.get("headline") or spec.get("title", "")
+    body     = spec.get("body") or spec.get("key_points", [])
+    purpose  = spec.get("purpose", "")
+    ct       = spec.get("content_type", "テキスト")
+    page     = spec.get("page", 1)
+    total    = spec.get("total_pages", 5)
+
+    slide = dst_prs.slides.add_slide(dst_prs.slide_layouts[6])
+    fn = get_design_fn(purpose, ct, page, total)
+    fn(slide, dst_prs, headline, body)
+    return slide
+
+def _legacy_create_slide(dst_prs, spec):
+    """旧実装（未使用）"""
     from pptx.util import Inches, Pt, Emu
     from pptx.dml.color import RGBColor
 
@@ -674,7 +690,7 @@ async def generate(req: GenerateRequest):
         for slide_spec in plan:
             page = slide_spec["page"]
             ct   = slide_spec.get("content_type", "テキスト")
-            spec = {**slide_spec, **(content_map.get(page, {}))}
+            spec = {**slide_spec, **(content_map.get(page, {})), "total_pages": len(plan)}
 
             log.info(f"Creating slide {page} ({ct}) from scratch...")
             create_slide_from_scratch(dst_prs, spec)
