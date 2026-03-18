@@ -434,9 +434,10 @@ def _set_text_list(shape, items: list) -> None:
 # ════════════════════════════════════════
 # Step 5b: スライドを新規作成（デザインシステム使用）
 # ════════════════════════════════════════
-def create_slide_from_scratch(dst_prs: Presentation, spec: dict) -> any:
+def create_slide_from_scratch(dst_prs: Presentation, spec: dict,
+                               used_history: list = None) -> any:
     """slide_designs.py のデザイン関数を使ってスライドを生成"""
-    from slide_designs import get_design_fn
+    from slide_designs import get_design_fn, DESIGN_NAMES
 
     headline = spec.get("headline") or spec.get("title", "")
     body     = spec.get("body") or spec.get("key_points", [])
@@ -446,8 +447,13 @@ def create_slide_from_scratch(dst_prs: Presentation, spec: dict) -> any:
     total    = spec.get("total_pages", 5)
 
     slide = dst_prs.slides.add_slide(dst_prs.slide_layouts[6])
-    fn = get_design_fn(purpose, ct, page, total)
+    fn = get_design_fn(purpose, ct, page, total, used_history or [])
     fn(slide, dst_prs, headline, body)
+
+    # 使用履歴を更新
+    if used_history is not None:
+        used_history.append(DESIGN_NAMES.get(fn, 'detail'))
+
     return slide
 
 def _legacy_create_slide(dst_prs, spec):
@@ -686,6 +692,7 @@ async def generate(req: GenerateRequest):
         loaded_templates = {}
 
         slide_info = []
+        used_history = []  # デザイン使用履歴（重複回避用）
 
         for slide_spec in plan:
             page = slide_spec["page"]
@@ -693,7 +700,7 @@ async def generate(req: GenerateRequest):
             spec = {**slide_spec, **(content_map.get(page, {})), "total_pages": len(plan)}
 
             log.info(f"Creating slide {page} ({ct}) from scratch...")
-            create_slide_from_scratch(dst_prs, spec)
+            create_slide_from_scratch(dst_prs, spec, used_history)
             slide_info.append({"page": page, "used_template": False})
 
         # Step 5: 一時保存
