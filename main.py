@@ -133,29 +133,42 @@ JSONのみ返答（コードブロック不要）:
 # ════════════════════════════════════════
 # Step 2: テンプレート選択
 # ════════════════════════════════════════
-TYPE_KEYWORD_MAP = {
-    "タイトル": "テキスト", "表紙": "テキスト", "概要": "テキスト",
-    "課題": "テキスト", "背景": "テキスト", "現状": "テキスト",
-    "まとめ": "テキスト", "結論": "テキスト", "サマリー": "テキスト",
-    "市場": "データ", "規模": "データ", "売上": "データ",
-    "推移": "データ", "数値": "データ", "KPI": "データ",
-    "比較": "比較", "競合": "比較", "マトリクス": "比較", "評価": "比較",
-    "プロセス": "プロセス", "フロー": "プロセス", "ステップ": "プロセス",
-    "ロードマップ": "プロセス", "スケジュール": "プロセス", "ガント": "プロセス",
-    "組織": "組織", "チーム": "組織", "体制": "組織",
-    "関係": "関係性", "構造": "関係性", "モデル": "関係性",
+# ════════════════════════════════════════
+# Step 2: テンプレート選択
+# ════════════════════════════════════════
+
+# カテゴリ表紙・区切りスライドのタイトル（コンテンツ用途ではないため除外）
+_EXCLUDE_TITLES = {
+    'PowerPoint text tables', 'Text boxes', 'Chevrons', 'Charts', 'Graphs',
+    'Shapes', 'Maps', 'Special Graphics', 'Qualifications', 'Resumes',
+    'Numbered points', 'Major points', 'Data PowerPoint tables',
+    'Alternative data PowerPoint tables', 'Gantt charts', 'Trees', 'Relations',
+    'Structured Text', 'Power Library', 'Service Line Charts', 'Flags',
+    'Consulting Report Template', 'Text Blocks', 'Org Charts', 'Driver Trees',
+    'Logic Trees', 'Bars', 'Columns', 'Lines', 'Pies', 'Areas', 'Radars',
+    'Waterfalls', 'Circles', 'Spheres', 'Triangles', 'Boxes', 'Puzzles',
+    'Other Graphs', 'Combination line and bar chart', 'DTC 標準カラーパレット',
+    'テンプレート検索ページ  1', 'テンプレート検索ページ  2',
+    'Power Library & Appendix（日本語版）', 'Power Library（図形）',
+    'Copy and paste these generic blocks, circles and arrows',
+    'CONFIDENTIAL', 'END OF DOC', 'APPENDIX', 'STICKER AND OTHERS',
+    'MAPS', 'Text', 'Label 1', 'Title', 'Update history', 'Table',
+    'Chevrons with tables', 'Chevrons with text boxes', 'Chevrons with table and header column',
 }
+
+# 使用可能なメタデータ（カテゴリ表紙を除外済み）
+_USABLE_METADATA = [m for m in ALL_METADATA if m.get('title', '').strip() not in _EXCLUDE_TITLES]
 
 def select_template(purpose: str, content_type: str) -> Optional[dict]:
     """メタデータからベストマッチのテンプレートスライドを返す"""
     combined = (purpose + " " + content_type).lower()
 
-    # content_typeで絞り込み
-    candidates = [m for m in ALL_METADATA if m.get("content_type") == content_type]
+    # content_typeで絞り込み（カテゴリ表紙除外済みのメタデータから）
+    candidates = [m for m in _USABLE_METADATA if m.get("content_type") == content_type]
 
     # なければ全体から
     if not candidates:
-        candidates = ALL_METADATA
+        candidates = _USABLE_METADATA
 
     # キーワードスコアリング
     def score(m):
