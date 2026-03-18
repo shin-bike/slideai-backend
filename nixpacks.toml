@@ -1,8 +1,8 @@
 [phases.setup]
-nixPkgs = ["libreoffice", "poppler_utils", "python311"]
+nixPkgs = ["libreoffice", "poppler_utils", "python3", "python3Packages.pip"]
 
 [phases.install]
-cmds = ["pip install -r requirements.txt"]
+cmds = ["pip3 install -r requirements.txt"]
 
 [start]
 cmd = "uvicorn main:app --host 0.0.0.0 --port $PORT"
