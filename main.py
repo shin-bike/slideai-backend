@@ -216,7 +216,6 @@ def copy_slide_from_template(src_prs: Presentation, slide_idx: int, dst_prs: Pre
             existing_bg = dst_slide_elem.find(qn('p:bg'))
             if existing_bg is not None:
                 dst_slide_elem.remove(existing_bg)
-            # spTree の直前に背景を挿入
             sp_tree = dst_slide_elem.find('.//' + qn('p:spTree'))
             if sp_tree is not None:
                 sp_tree.addprevious(copy.deepcopy(src_bg))
@@ -224,6 +223,37 @@ def copy_slide_from_template(src_prs: Presentation, slide_idx: int, dst_prs: Pre
                 dst_slide_elem.insert(0, copy.deepcopy(src_bg))
     except Exception as e:
         log.warning(f"Background copy failed: {e}")
+
+    # プレースホルダーの位置情報を修正（top=Noneのシェイプに元スライドの座標を付与）
+    src_shapes_by_name = {}
+    for src_sh in src_slide.shapes:
+        if src_sh.top is not None:
+            src_shapes_by_name[src_sh.name] = src_sh
+
+    for sh in new_slide.shapes:
+        if sh.top is not None:
+            continue
+        if not sh.has_text_frame:
+            continue
+        src_sh = src_shapes_by_name.get(sh.name)
+        if src_sh is None:
+            continue
+        try:
+            sp_elem = sh._element
+            spPr = sp_elem.find(qn('p:spPr'))
+            if spPr is None:
+                continue
+            if spPr.find(qn('a:xfrm')) is not None:
+                continue
+            xfrm = etree.SubElement(spPr, qn('a:xfrm'))
+            off  = etree.SubElement(xfrm, qn('a:off'))
+            ext  = etree.SubElement(xfrm, qn('a:ext'))
+            off.set('x', str(int(src_sh.left  or 0)))
+            off.set('y', str(int(src_sh.top   or 0)))
+            ext.set('cx', str(int(src_sh.width  or 9000000)))
+            ext.set('cy', str(int(src_sh.height or 800000)))
+        except Exception as e:
+            log.warning(f"Position fix failed for {sh.name}: {e}")
 
     return new_slide
 
@@ -262,7 +292,7 @@ def inject_content(slide, spec: dict) -> None:
 
     title_shape    = None
     content_shapes = []
-    null_top_shapes = []  # top=Noneのシェイプ（コピー直後のプレースホルダー）
+    seen_names     = set()  # 重複シェイプを除外
 
     for s in slide.shapes:
         if not s.has_text_frame:
@@ -270,13 +300,8 @@ def inject_content(slide, spec: dict) -> None:
         text = s.text_frame.text.strip()
         top  = s.top
 
-        # top=Noneのシェイプは別途収集
-        if top is None:
-            null_top_shapes.append(s)
-            continue
-
-        # フッター・ページ番号エリアを除外
-        if top > _FOOTER_TOP:
+        # フッター・ページ番号エリアを除外（位置修正後はtopが入っているはず）
+        if top is not None and top > _FOOTER_TOP:
             continue
         # 数字のみはページ番号
         if text.isdigit():
@@ -285,25 +310,23 @@ def inject_content(slide, spec: dict) -> None:
         if any(re.search(p, text) for p in _IGNORE_PATTERNS):
             continue
 
+        # Rectangle 2 = タイトル
+        if s.name == 'Rectangle 2' and title_shape is None:
+            title_shape = s
+            seen_names.add(s.name + str(top))
+            continue
+
+        # 重複シェイプを除外（同じ名前・同じ位置）
+        key = s.name + str(top)
+        if key in seen_names:
+            continue
+        seen_names.add(key)
+
         content_shapes.append(s)
 
-    # Rectangle 2 をタイトルとして優先（DTCテンプレートのタイトル命名規則）
-    for s in null_top_shapes:
-        if s.name == 'Rectangle 2':
-            title_shape = s
-            break
-
-    # なければnull_topの先頭またはcontent_shapesの先頭
-    if not title_shape:
-        if null_top_shapes:
-            title_shape = null_top_shapes[0]
-        elif content_shapes:
-            title_shape = content_shapes.pop(0)
-
-    # null_topのうちタイトル以外をcontentに追加
-    for s in null_top_shapes:
-        if s is not title_shape:
-            content_shapes.append(s)
+    # タイトルが見つからない場合は最初のcontentをタイトルに
+    if not title_shape and content_shapes:
+        title_shape = content_shapes.pop(0)
 
     # top順でソート
     content_shapes.sort(key=lambda s: (s.top or 0, s.left or 0))
