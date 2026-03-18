@@ -224,7 +224,8 @@ def inject_content(slide, spec: dict) -> None:
     if not text_shapes:
         return
 
-    # ソート: 上→下、左→右
+    # ソート: 上→下、左→右（top/leftがNoneのシェイプを除外）
+    text_shapes = [s for s in text_shapes if s.top is not None and s.left is not None]
     text_shapes.sort(key=lambda s: (s.top, s.left))
 
     # 最初のテキストボックス → タイトル/ヘッドライン
@@ -316,9 +317,9 @@ def create_slide_from_scratch(dst_prs: Presentation, spec: dict) -> any:
     MX = int(Inches(0.45))
     MY = int(Inches(0.35))
     TH = int(Inches(0.75))
-    CY = int(MY + TH + Inches(0.15))
+    CY = int(MY + TH + int(Inches(0.15)))
     CW = int(W - MX * 2)
-    CH = int(H - CY - Inches(0.25))
+    CH = int(H - CY - int(Inches(0.25)))
 
     headline = spec.get("headline") or spec.get("title", "")
     body     = spec.get("body") or spec.get("key_points", [])
