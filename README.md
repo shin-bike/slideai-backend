@@ -79,3 +79,4 @@ slideai_backend/
 - `metadata.json` と `.pptx` ファイルはGitにコミットしてください（Railway側に必要）
 - pptxファイルは合計約12MB、Railway無料枠で問題なし
 - 視覚QAはLibreOfficeとpopplerが必要（nixpacks.tomlで自動インストール）
+　
