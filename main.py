@@ -103,9 +103,37 @@ def call_claude_vision(api_key: str, prompt: str, image_b64: str, media_type: st
     return msg.content[0].text
 
 def parse_json(text: str):
+    """JSONパース（途中切れや不正文字に強化）"""
+    # コードブロック記法を除去
     cleaned = re.sub(r"```json\s*", "", text)
     cleaned = re.sub(r"```\s*", "", cleaned).strip()
-    return json.loads(cleaned)
+
+    # まずそのままパース試行
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        log.warning(f"JSON parse error: {e}. Attempting repair...")
+
+    # 途中切れ対策: 不完全なJSONを修復
+    # 最後の完全なオブジェクト（}）を見つけて配列を閉じる
+    try:
+        # 最後の "}," または "}" を見つけて配列として閉じる
+        last_brace = cleaned.rfind('}')
+        if last_brace > 0:
+            truncated = cleaned[:last_brace+1]
+            # 配列として閉じる
+            if truncated.strip().startswith('['):
+                truncated = truncated + ']'
+            elif truncated.strip().startswith('{'):
+                truncated = '[' + truncated + ']'
+            result = json.loads(truncated)
+            log.warning(f"JSON repaired: recovered {len(result)} items")
+            return result
+    except Exception as e2:
+        log.warning(f"JSON repair also failed: {e2}")
+
+    # それでも失敗したら元のエラーを再送出
+    raise json.JSONDecodeError(f"Failed to parse JSON: {text[:200]}", text, 0)
 
 # ════════════════════════════════════════
 # Step 1: 構成設計
@@ -127,7 +155,8 @@ def design_structure(api_key: str, topic: str, page_count: int, notes: str) -> l
 JSONのみ返答（コードブロック不要）:
 [{{"page":1,"title":"スライドタイトル","purpose":"目的","content_type":"テキスト","key_points":["ポイント1（30文字以上）","ポイント2","ポイント3","ポイント4","ポイント5"],"visual_hint":"グラフ|テーブル|フロー|箇条書き|マトリクス"}}]"""
 
-    raw = call_claude(api_key, prompt, max_tokens=2000)
+    tokens = max(2000, page_count * 300 + 500)
+    raw = call_claude(api_key, prompt, max_tokens=tokens)
     return parse_json(raw)
 
 # ════════════════════════════════════════
@@ -643,25 +672,38 @@ def qa_slides_with_vision(api_key: str, prs: Presentation, tmp_dir: Path) -> lis
 # Step 7: コンテンツ生成
 # ════════════════════════════════════════
 def generate_content(api_key: str, plan: list[dict], topic: str, notes: str) -> list[dict]:
-    prompt = f"""各スライドの詳細コンテンツを生成してください。
+    """ページ数に応じて分割生成してJSONエラーを防ぐ"""
+    CHUNK_SIZE = 5  # 一度に生成するページ数の上限
+
+    all_results = []
+    chunks = [plan[i:i+CHUNK_SIZE] for i in range(0, len(plan), CHUNK_SIZE)]
+
+    for chunk in chunks:
+        prompt = f"""各スライドの詳細コンテンツを生成してください。
 
 テーマ: {topic}
 追加指示: {notes or 'なし'}
 
-構成:
-{chr(10).join(f"Page{s['page']}: {s['title']}（{s['purpose']}）" for s in plan)}
+対象スライド（{len(chunk)}ページ分）:
+{chr(10).join(f"Page{s['page']}: {s['title']}（{s['purpose']}）" for s in chunk)}
 
 条件:
 - headlineは20〜45文字のインパクトある1文（数値・体言止めを使う）
 - bodyは6〜8個のポイント、「見出し：詳細説明」形式（各40文字以上）
 - 具体的な数値・事例・根拠を必ず含める
 - data_noteはデータスライドのみ「65,78,85,79,92,98」形式で数値を記載
+- 必ず全{len(chunk)}ページ分を生成すること
 
 JSONのみ返答（コードブロック不要）:
 [{{"page":1,"headline":"メインメッセージ","body":["見出し1：詳細説明40文字以上","見出し2：...","見出し3：...","見出し4：...","見出し5：...","見出し6：..."],"data_note":""}}]"""
 
-    raw = call_claude(api_key, prompt, max_tokens=3000)
-    return parse_json(raw)
+        # チャンクサイズに応じてmax_tokensを動的に設定（1ページ=700トークン見込み）
+        tokens = max(2000, len(chunk) * 700 + 500)
+        raw = call_claude(api_key, prompt, max_tokens=tokens)
+        chunk_results = parse_json(raw)
+        all_results.extend(chunk_results)
+
+    return all_results
 
 # ════════════════════════════════════════
 # メイン生成エンドポイント
